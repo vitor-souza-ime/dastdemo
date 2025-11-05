@@ -56,6 +56,18 @@ jobs:
             cat logs.txt || true
             exit 1
           fi
+          
+          # Testar endpoints manualmente
+          echo ""
+          echo "=== Testando endpoints ==="
+          echo "1. Endpoint /hello:"
+          curl -i "http://localhost:7000/hello?user=admin"
+          echo ""
+          echo "2. Endpoint /getUser:"
+          curl -i "http://localhost:7000/getUser?id=1"
+          echo ""
+          echo "3. Endpoint /run:"
+          curl -i "http://localhost:7000/run?cmd=whoami"
 
       - name: Create report dir
         run: mkdir -p zap-reports
@@ -91,16 +103,56 @@ jobs:
             find zap-reports -type f -exec ls -lh {} \;
           fi
 
-      - name: Upload ZAP reports as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-reports
-          path: zap-reports
+      - name: Generate summary report
+        if: always()
+        run: |
+          cat > zap-reports/RESUMO.md << 'EOF'
+          # 🔒 Relatório DAST - OWASP ZAP
+          
+          ## 📊 Aplicação Testada
+          - **URL:** http://127.0.0.1:7000
+          - **Framework:** Javalin 6.7.0
+          - **Data:** $(date)
+          
+          ## 🎯 Vulnerabilidades Encontradas
+          
+          ### 1. Information Disclosure
+          **Endpoint:** `/hello?user=admin`
+          - Expõe secret hardcoded na resposta
+          - Severidade: ALTA
+          
+          ### 2. SQL Injection
+          **Endpoint:** `/getUser?id=1`
+          - Concatenação direta na query SQL
+          - Severidade: CRÍTICA
+          
+          ### 3. Command Injection
+          **Endpoint:** `/run?cmd=whoami`
+          - Execução de comandos sem validação
+          - Severidade: CRÍTICA
+          
+          ## 📄 Relatórios Disponíveis
+          - `zap_report.html` - Relatório visual completo
+          - `zap_report.json` - Dados estruturados
+          - `zap_report.md` - Resumo markdown
+          EOF
 
       - name: Stop app
         if: always()
         run: |
           if [ -f app.pid ]; then
+            echo "Parando aplicação (PID: $(cat app.pid))"
             kill $(cat app.pid) || true
             rm app.pid
           fi
+
+      - name: Upload ZAP reports as artifact
+        if: always()  # ← CRÍTICO: Adicione esta linha!
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-dast-reports
+          path: |
+            zap-reports/
+            logs.txt
+          retention-days: 30
+          if-no-files-found: warn  # ← Avisa se não encontrar arquivos
