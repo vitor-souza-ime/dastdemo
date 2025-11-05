@@ -9,7 +9,6 @@ on:
 jobs:
   dast:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,16 +17,34 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '21'    # ajuste para '17' se preferir
 
       - name: Build Jar
-        run: mvn package -DskipTests
+        run: mvn -B -DskipTests package
 
       - name: Start app in background
         run: |
           nohup java -cp target/dast-demo-1.0-SNAPSHOT.jar org.example.Main > logs.txt 2>&1 &
           echo $! > app.pid
-          sleep 5  # espera app subir
+          echo "App pid: $(cat app.pid)"
+
+      - name: Wait for app to be ready (localhost:7000)
+        run: |
+          echo "Waiting for app on http://localhost:7000 ..."
+          for i in {1..60}; do
+            if curl -sSf http://localhost:7000/ >/dev/null 2>&1 || curl -sSf http://localhost:7000/actuator/health >/dev/null 2>&1; then
+              echo "App is ready"
+              break
+            fi
+            echo "Still waiting... ($i)"
+            sleep 2
+          done
+          # print logs if app didn't come up
+          if ! curl -sSf http://localhost:7000/ >/dev/null 2>&1; then
+            echo "App did not start in time, printing logs:"
+            cat logs.txt || true
+            exit 1
+          fi
 
       - name: Create report dir
         run: mkdir -p zap-reports
@@ -35,9 +52,13 @@ jobs:
       - name: Run OWASP ZAP baseline scan
         run: |
           docker run --rm \
+            --add-host=host.docker.internal:host-gateway \
             -v $(pwd)/zap-reports:/zap/reports \
-            owasp/zap2docker-stable \
+            owasp/zap2docker-stable:2.12.0 \
             zap-baseline.py -t http://host.docker.internal:7000 -r zap_report.html -J zap_report.json -d
+
+      - name: List zap-reports for debugging
+        run: ls -la zap-reports || true
 
       - name: Upload ZAP report
         uses: actions/upload-artifact@v4
@@ -47,5 +68,7 @@ jobs:
 
       - name: Stop app
         run: |
-          kill $(cat app.pid) || true
-          rm app.pid
+          if [ -f app.pid ]; then
+            kill $(cat app.pid) || true
+            rm app.pid
+          fi
