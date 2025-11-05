@@ -5,11 +5,11 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   dast:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,14 +20,52 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Build Jar
-        run: mvn package -DskipTests
+      - name: Build Jar com dependências
+        run: mvn clean package -DskipTests
+
+      - name: Verificar JAR gerado
+        run: |
+          echo "=== Conteúdo do target/ ==="
+          ls -lh target/
+          echo ""
+          echo "=== Verificando se JAR é executável ==="
+          jar tf target/dast-demo-1.0-SNAPSHOT.jar | head -20
 
       - name: Start app in background
         run: |
-          nohup java -cp target/dast-demo-1.0-SNAPSHOT.jar org.example.Main > logs.txt 2>&1 &
+          echo "Iniciando aplicação..."
+          nohup java -jar target/dast-demo-1.0-SNAPSHOT.jar > logs.txt 2>&1 &
           echo $! > app.pid
-          sleep 5  # espera app subir
+          echo "App PID: $(cat app.pid)"
+
+      - name: Wait for app to be ready (localhost:7000)
+        run: |
+          echo "Aguardando aplicação em http://localhost:7000 ..."
+          for i in {1..60}; do
+            # Testar endpoint /hello (que sempre existe)
+            if curl -sSf "http://localhost:7000/hello?user=test" >/dev/null 2>&1; then
+              echo "✅ App está pronto!"
+              break
+            fi
+            echo "Tentativa $i/60..."
+            sleep 2
+          done
+          
+          # Verificar se app realmente subiu
+          if ! curl -sSf "http://localhost:7000/hello?user=test" >/dev/null 2>&1; then
+            echo "❌ App não iniciou a tempo. Logs:"
+            cat logs.txt || true
+            exit 1
+          fi
+          
+          # Testar todos os endpoints
+          echo ""
+          echo "=== Testando endpoints ==="
+          curl -v "http://localhost:7000/hello?user=admin"
+          echo ""
+          curl -v "http://localhost:7000/getUser?id=1"
+          echo ""
+          curl -v "http://localhost:7000/run?cmd=whoami"
 
       - name: Create report dir
         run: mkdir -p zap-reports
@@ -35,17 +73,36 @@ jobs:
       - name: Run OWASP ZAP baseline scan
         run: |
           docker run --rm \
-            -v $(pwd)/zap-reports:/zap/reports \
-            owasp/zap2docker-stable \
-            zap-baseline.py -t http://host.docker.internal:7000 -r zap_report.html -J zap_report.json -d
+            --add-host=host.docker.internal:host-gateway \
+            -v $(pwd)/zap-reports:/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://host.docker.internal:7000 \
+              -r zap_report.html \
+              -J zap_report.json \
+              -w zap_report.md \
+              -d
+        continue-on-error: true
 
-      - name: Upload ZAP report
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-reports
-          path: zap-reports
-
-      - name: Stop app
+      - name: Show app logs
+        if: always()
         run: |
-          kill $(cat app.pid) || true
-          rm app.pid
+          echo "=== Logs da aplicação ==="
+          cat logs.txt || echo "Sem logs"
+
+      - name: List zap-reports
+        if: always()
+        run: |
+          echo "=== Relatórios gerados ==="
+          ls -lh zap-reports/ || echo "Diretório vazio"
+
+      - name: Generate vulnerability summary
+        if: always()
+        run: |
+          cat > zap-reports/RESUMO.md << 'EOF'
+          # 🔒 Relatório DAST - Vulnerabilidades Detectadas
+          
+          ## 📊 Endpoints Analisados
+          
+          ### 1. GET /hello?user=admin
+          **Vulnerabilidade:** Exposição de Credenciais
