@@ -1,0 +1,51 @@
+name: DAST Scan (Javalin Demo)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build Jar
+        run: mvn package -DskipTests
+
+      - name: Start app in background
+        run: |
+          nohup java -cp target/dast-demo-1.0-SNAPSHOT.jar org.example.Main > logs.txt 2>&1 &
+          echo $! > app.pid
+          sleep 5  # espera app subir
+
+      - name: Create report dir
+        run: mkdir -p zap-reports
+
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          docker run --rm \
+            -v $(pwd)/zap-reports:/zap/reports \
+            owasp/zap2docker-stable \
+            zap-baseline.py -t http://host.docker.internal:7000 -r zap_report.html -J zap_report.json -d
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-reports
+          path: zap-reports
+
+      - name: Stop app
+        run: |
+          kill $(cat app.pid) || true
+          rm app.pid
